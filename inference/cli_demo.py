@@ -11,7 +11,7 @@ Running the Script:
 To run the script, use the following command with appropriate arguments:
 
 ```bash
-$ python cli_demo.py --prompt "A girl riding a bike." --model_path THUDM/CogVideoX-5b --generate_type "t2v"
+$ python cli_demo.py --prompt "A girl riding a bike." --model_path THUDM/CogVideoX-2b --generate_type "t2v"
 ```
 
 Additional options are available to specify the model path, guidance scale, number of inference steps, video generation type, and output paths.
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--guidance_scale", type=float, default=6.0, help="The scale for classifier-free guidance")
     parser.add_argument(
-        "--num_inference_steps", type=int, default=50, help="Number of steps for the inference process"
+        "--num_inference_steps", type=int, default=8, help="Number of steps for the inference process"
     )
     parser.add_argument("--num_videos_per_prompt", type=int, default=1, help="Number of videos to generate per prompt")
     parser.add_argument(

@@ -2,24 +2,24 @@
 NUM_FRAME=49
 HEIGHT=480
 WIDTH=720
-LEARNING_RATE=1e-7
+LEARNING_RATE=1e-6
 LOSS_TYPE="huber"
 REWARD_SCALE=1.0
 
 MODEL_DIR=THUDM/CogVideoX-2b
 MODEL_DIR2=THUDM/CogVideoX-2b
-OUTPUT_DIR=/ephemeral/hao.zhang/ckptfolder/cogvid_2b/$LOSS_TYPE/$LEARNING_RATE/$REWARD_SCALE
+OUTPUT_DIR=/lustre/scratch/users/hao.zhang/rlsu_files/ckptfolder/cogvid_2b_turbo/$LOSS_TYPE/$LEARNING_RATE/$REWARD_SCALE
 # VAE_DIR=/home/ubuntu/document/data/Open-Sora-Plan-v1.2.0/vae
 
 
-accelerate launch --main_process_port 29506 --num_processes 2 ./cog_turbo_new.py \
+accelerate launch --main_process_port 29506 --num_processes 4 ./cog_turbo_new.py \
   --pretrained_teacher_model=$MODEL_DIR \
   --pretrained_student_model=$MODEL_DIR2 \
   --num_frames=$NUM_FRAME \
   --height=$HEIGHT \
   --width=$WIDTH \
   --output_dir=$OUTPUT_DIR \
-  --cache_dir="/ephemeral/hao.zhang/cache" \
+  --cache_dir="/lustre/scratch/users/hao.zhang/.cache" \
   --num_train_inferences=8 \
   --lr_scheduler="constant" \
   --mixed_precision=fp16 \
@@ -29,8 +29,8 @@ accelerate launch --main_process_port 29506 --num_processes 2 ./cog_turbo_new.py
   --max_train_samples=583747 \
   --max_train_steps=50000 \
   --dataloader_num_workers=4 \
-  --train_shards_path_or_url='/ephemeral/hao.zhang/resourcefolder/video_mixkit_65f_54735.jsonl' \
-  --checkpointing_steps=10 \
+  --train_shards_path_or_url='/lustre/scratch/users/hao.zhang/rlsu_files/codefolder/rlsu_osp/Open-Sora-Plan/2m_panda_caption.jsonl' \
+  --checkpointing_steps=100 \
   --checkpoints_total_limit=10 \
   --gradient_accumulation_steps=1 \
   --use_8bit_adam \

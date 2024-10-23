@@ -76,7 +76,7 @@ def get_hpsv2_fn(precision="amp"):
 
     model, _, preprocess_val = create_model_and_transforms(
         "ViT-H-14",
-        f"./hpsv2/HPS_v2.1_compressed.pt",
+        f"/lustre/scratch/users/hao.zhang/rlsu_files/codefolder/haocog/CogVideo/cm/hpsv2/HPS_v2.1_compressed.pt",
         precision=precision,
         device="cpu",
         jit=False,

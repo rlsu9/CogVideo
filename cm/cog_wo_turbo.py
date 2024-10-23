@@ -35,7 +35,7 @@ from torch.utils.data import default_collate
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, CLIPTextModel, PretrainedConfig
-from reward_fn import get_reward_fn
+# from reward_fn import get_reward_fn
 
 import diffusers
 from diffusers import (
@@ -431,7 +431,7 @@ def parse_args():
     parser.add_argument(
         "--video_rm_ckpt_dir",
         type=str,
-        default="/lustre/scratch/users/hao.zhang/rlsu_files/codefolder/haocog/CogVideo/intervid_ckpt/InternVideo2-stage2_1b-224p-f4.pt"
+        default="/ephemeral/hao.zhang/codefolder/CogVideo/cm/intervid_ckpt/InternVideo2-stage2_1b-224p-f4.pt"
     )
     parser.add_argument(
         "--video_rm_batch_size",
@@ -800,15 +800,15 @@ def time2tensor(t, zt2):
 
 @torch.no_grad()
 def decode_latents(latents, vae):
-    print(f"latent shape under decoding {latents.shape}")
-    latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
-    latents_splits = torch.split(latents, split_size_or_sections=2, dim=2)
-    latents = latents_splits[0]
-    print(f"latent really got used shape {latents.shape}")
-    latents = 1 / vae.config.scaling_factor * latents
-    latents = latents.to(torch.float16)
-    frames = vae.decode(latents).sample
-    return frames
+    latents_splits = torch.split(latents, split_size_or_sections=1, dim=2)
+    decoded_videos=[]
+    for split in latents_splits:
+        decoded_video = vae.vae.decode(split)
+        decoded_videos.append(decoded_video)
+        break
+    final_video = torch.cat(decoded_videos, dim=1)
+    
+    return final_video
 
 def get_3d_rotary_pos_embed(
     embed_dim, crops_coords, grid_size, temporal_size, theta: int = 10000, use_real: bool = True
@@ -1018,14 +1018,14 @@ accelerator = Accelerator(
     project_config=accelerator_project_config,
     split_batches=False,  # It's important to set this to True when using webdataset to get the right number of steps for lr scheduling. If set to False, the number of steps will be devide by the number of processes assuming batches are multiplied by the number of processes
 )
-reward_fn = get_reward_fn(args.reward_fn_name, precision=args.mixed_precision)
+# reward_fn = get_reward_fn(args.reward_fn_name, precision=args.mixed_precision)
 
-video_rm_fn = get_reward_fn(
-    args.video_rm_name,
-    precision=args.mixed_precision,
-    rm_ckpt_dir=args.video_rm_ckpt_dir,
-    n_frames=args.video_rm_batch_size,
-)
+# video_rm_fn = get_reward_fn(
+#     args.video_rm_name,
+#     precision=args.mixed_precision,
+#     rm_ckpt_dir=args.video_rm_ckpt_dir,
+#     n_frames=args.video_rm_batch_size,
+# )
 
 def contains_nan(tensor):
     return torch.any(torch.isnan(tensor)).item()
@@ -1501,39 +1501,21 @@ def main(args):
                 elif args.loss_type == "huber":
                     huber_c = args.huber_c
                     loss = (torch.sqrt(ref_diff.view(bsz, -1) ** 2 + huber_c ** 2) - huber_c).mean()
-
-                video = decode_latents(z_ref_t, vae)
-                print(f"shape for video is {video.shape}")
-                videos = ((video / 2.0 + 0.5).clamp(0, 1) * 255).to(dtype=torch.float16).permute(0, 2, 1, 3, 4).contiguous()
-                expert_rewards = reward_fn(videos[:, 0:1, :, :, :][0] , text)
-                reward_loss = -expert_rewards.mean() * args.reward_scale
-                
-                
-                decoded_imgs = videos[:, 0:8, :, :, :][0].reshape(
-                        args.train_batch_size,
-                        8,
-                        *videos[0].shape[1:],
-                )
-                
-                video_rewards = video_rm_fn(decoded_imgs, text)
-                video_rm_loss = (
-                    -video_rewards.mean() * args.video_reward_scale
-                )
-                
+            
                 
                 loss=loss.mean()
-                accelerator.backward(loss + reward_loss + video_rm_loss)
+                accelerator.backward(loss)
                 
                 print(f"loss value is {loss}")
+                
                 
                 # for idx, param in enumerate(transformer.parameters()):
                 #     # print(param.requires_grad)
                 #     if param.grad is not None:
                 #         print(param.grad)
-                #     # else:
-                #     #     print(f"the grad for {param} is None")
+                    # else:
+                    #     print(f"the grad for {param} is None")
                         
-                # exit()
                 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
@@ -1579,9 +1561,10 @@ def main(args):
                     #     log_validation(vae, unet, args, accelerator, weight_dtype, global_step, "online")
             
             avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
-            avg_reward_loss = accelerator.gather(reward_loss.repeat(args.train_batch_size)).mean()
-            avg_video_reward_loss = accelerator.gather(video_rm_loss.repeat(args.train_batch_size)).mean()
-            logs = {"pic_reward_loss": avg_reward_loss.detach().item(), "video_reward_loss": avg_video_reward_loss.detach().item(), "loss": avg_loss.detach().item(), "overall_loss": avg_reward_loss.detach().item() + avg_loss.detach().item() + video_rm_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            # avg_reward_loss = accelerator.gather(reward_loss.repeat(args.train_batch_size)).mean()
+            # avg_video_reward_loss = accelerator.gather(video_rm_loss.repeat(args.train_batch_size)).mean()
+            # logs = {"pic_reward_loss": avg_reward_loss.detach().item(), "video_reward_loss": video_rm_loss.detach().item(), "loss": avg_loss.detach().item(), "overall_loss": avg_reward_loss.detach().item() + avg_loss.detach().item() + video_rm_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": avg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
