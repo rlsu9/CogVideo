@@ -35,7 +35,7 @@ from torch.utils.data import default_collate
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, CLIPTextModel, PretrainedConfig
-from reward_fn import get_reward_fn
+# from reward_fn import get_reward_fn
 
 import diffusers
 from diffusers import (
@@ -964,14 +964,14 @@ accelerator = Accelerator(
     project_config=accelerator_project_config,
     split_batches=False,  # It's important to set this to True when using webdataset to get the right number of steps for lr scheduling. If set to False, the number of steps will be devide by the number of processes assuming batches are multiplied by the number of processes
 )
-reward_fn = get_reward_fn(args.reward_fn_name, precision=args.mixed_precision)
+# reward_fn = get_reward_fn(args.reward_fn_name, precision=args.mixed_precision)
 
-video_rm_fn = get_reward_fn(
-    args.video_rm_name,
-    precision=args.mixed_precision,
-    rm_ckpt_dir=args.video_rm_ckpt_dir,
-    n_frames=args.video_rm_batch_size,
-)
+# video_rm_fn = get_reward_fn(
+#     args.video_rm_name,
+#     precision=args.mixed_precision,
+#     rm_ckpt_dir=args.video_rm_ckpt_dir,
+#     n_frames=args.video_rm_batch_size,
+# )
 
 def contains_nan(tensor):
     return torch.any(torch.isnan(tensor)).item()
