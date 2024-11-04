@@ -1,3 +1,6 @@
+conda create -n cogvideo_cm python==3.11.10 -y
+pip install -r requirements.txt
+
 pip install peft datasets bitsandbytes hpsv2 wandb
 
 gsutil cp gs://vid_gen/runlong_temp_folder_for_pandas70m_debugging/bpe_simple_vocab_16e6.txt.gz .
