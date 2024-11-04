@@ -1,8 +1,9 @@
 rm -rf /lustre/scratch/users/hao.zhang/rlsu_files/resourcefolder/CogVideoX-2b/transformer/*
 mkdir -p /lustre/scratch/users/hao.zhang/rlsu_files/codefolder/haocog/CogVideo/inference/output_turbo
 
-LR_LIST=(1e-6 3e-7 5e-7)
-STEP_LIST=(100 200 300 400 500)
+LR_LIST=(3e-7 5e-7 1e-6)
+# STEP_LIST=(100 200 300 400 500)
+STEP_LIST=(2000 1900 1800 1700 1600)
 
 for LR in "${LR_LIST[@]}"; do
     for STEP in "${STEP_LIST[@]}"; do

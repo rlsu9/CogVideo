@@ -8,11 +8,11 @@ REWARD_SCALE=1.0
 
 MODEL_DIR=THUDM/CogVideoX-2b
 MODEL_DIR2=THUDM/CogVideoX-2b
-OUTPUT_DIR=/lustre/scratch/users/hao.zhang/rlsu_files/ckptfolder/cogvid_2b_turbo/$LOSS_TYPE/$LEARNING_RATE/$REWARD_SCALE
+OUTPUT_DIR=/lustre/scratch/users/hao.zhang/rlsu_files/ckptfolder/cogvid_2b_turbo_scheduler_debug/$LOSS_TYPE/$LEARNING_RATE/$REWARD_SCALE
 # VAE_DIR=/home/ubuntu/document/data/Open-Sora-Plan-v1.2.0/vae
 
 
-accelerate launch --main_process_port 29506 --num_processes 4 ./cog_turbo_new.py \
+accelerate launch --main_process_port 29506 --num_processes 4 ./cog_turbo.py \
   --pretrained_teacher_model=$MODEL_DIR \
   --pretrained_student_model=$MODEL_DIR2 \
   --num_frames=$NUM_FRAME \

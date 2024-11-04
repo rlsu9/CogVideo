@@ -80,12 +80,10 @@ from diffusers.utils import (
 )
 from diffusers import (
     CogVideoXPipeline,
-    AutoencoderKLCogVideoX,
     CogVideoXDDIMScheduler,
     CogVideoXDPMScheduler,
     CogVideoXImageToVideoPipeline,
     CogVideoXVideoToVideoPipeline,
-    CogVideoXTransformer3DModel,
 )
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
@@ -249,108 +247,154 @@ def _text_preprocessing(text, clean_caption=False):
 
     return [process(t) for t in text]
 
-def _get_t5_prompt_embeds(
-    tokenizer,
-    text_encoder,
-    prompt: Union[str, List[str]] = None,
-    num_videos_per_prompt: int = 1,
-    max_sequence_length: int = 226,
-    device: Optional[torch.device] = None,
-    dtype: Optional[torch.dtype] = None,
-):
-    device = device
-    dtype = dtype
-
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    batch_size = len(prompt)
-
-    text_inputs = tokenizer(
-        prompt,
-        padding="max_length",
-        max_length=max_sequence_length,
-        truncation=True,
-        add_special_tokens=True,
-        return_tensors="pt",
-    )
-    text_input_ids = text_inputs.input_ids
-    untruncated_ids = tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-
-    if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-        removed_text = tokenizer.batch_decode(untruncated_ids[:, max_sequence_length - 1 : -1])
-        logger.warning(
-            "The following part of your input was truncated because `max_sequence_length` is set to "
-            f" {max_sequence_length} tokens: {removed_text}"
-        )
-
-    prompt_embeds = text_encoder(text_input_ids.to(device))[0]
-    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
-
-    # duplicate text embeddings for each generation per prompt, using mps friendly method
-    _, seq_len, _ = prompt_embeds.shape
-    prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
-    prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
-
-    return prompt_embeds
-
 
 def encode_prompt(
     tokenizer,
     text_encoder,
     prompt: Union[str, List[str]],
-    negative_prompt: Optional[Union[str, List[str]]] = None,
     do_classifier_free_guidance: bool = True,
-    num_videos_per_prompt: int = 1,
+    negative_prompt: str = "",
+    num_images_per_prompt: int = 1,
+    device: Optional[torch.device] = None,
     prompt_embeds: Optional[torch.Tensor] = None,
     negative_prompt_embeds: Optional[torch.Tensor] = None,
+    prompt_attention_mask: Optional[torch.Tensor] = None,
+    negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+    clean_caption: bool = True,
     max_sequence_length: int = 226,
-    device: Optional[torch.device] = None,
-    dtype: Optional[torch.dtype] = None,
+    **kwargs,
 ):
+    r"""
+    Encodes the prompt into text encoder hidden states.
 
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    if prompt is not None:
+    Args:
+        prompt (`str` or `List[str]`, *optional*):
+            prompt to be encoded
+        negative_prompt (`str` or `List[str]`, *optional*):
+            The prompt not to guide the image generation. If not defined, one has to pass `negative_prompt_embeds`
+            instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is less than `1`). For
+            PixArt-Alpha, this should be "".
+        do_classifier_free_guidance (`bool`, *optional*, defaults to `True`):
+            whether to use classifier free guidance or not
+        num_images_per_prompt (`int`, *optional*, defaults to 1):
+            number of images that should be generated per prompt
+        device: (`torch.device`, *optional*):
+            torch device to place the resulting embeddings on
+        prompt_embeds (`torch.Tensor`, *optional*):
+            Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
+            provided, text embeddings will be generated from `prompt` input argument.
+        negative_prompt_embeds (`torch.Tensor`, *optional*):
+            Pre-generated negative text embeddings. For PixArt-Alpha, it's should be the embeddings of the ""
+            string.
+        clean_caption (`bool`, defaults to `False`):
+            If `True`, the function will preprocess and clean the provided caption before encoding.
+        max_sequence_length (`int`, defaults to 120): Maximum sequence length to use for the prompt.
+    """
+
+    if "mask_feature" in kwargs:
+        deprecation_message = "The use of `mask_feature` is deprecated. It is no longer used in any computation and that doesn't affect the end results. It will be removed in a future version."
+        deprecate("mask_feature", "1.0.0", deprecation_message, standard_warn=False)
+
+
+    if prompt is not None and isinstance(prompt, str):
+        batch_size = 1
+    elif prompt is not None and isinstance(prompt, list):
         batch_size = len(prompt)
     else:
         batch_size = prompt_embeds.shape[0]
 
+    # See Section 3.1. of the paper.
+    max_length = max_sequence_length
+
     if prompt_embeds is None:
-        prompt_embeds = _get_t5_prompt_embeds(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-            prompt=prompt,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=max_sequence_length,
-            device=device,
-            dtype=dtype,
+        prompt = _text_preprocessing(prompt, clean_caption=clean_caption)
+        # print("new_prompt", prompt)
+        text_inputs = tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
         )
+        # print("text_inputs", text_inputs)
+        text_input_ids = text_inputs.input_ids
+        # print("text_input_ids", text_input_ids)
+        untruncated_ids = tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
+        # print("untruncated_ids", untruncated_ids)
+        if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(
+            text_input_ids, untruncated_ids
+        ):
+            removed_text = tokenizer.batch_decode(untruncated_ids[:, max_length - 1 : -1])
+            logger.warning(
+                "The following part of your input was truncated because T5 can only handle sequences up to"
+                f" {max_length} tokens: {removed_text}"
+            )
 
+        prompt_attention_mask = text_inputs.attention_mask
+        prompt_attention_mask = prompt_attention_mask.to(device)
+        # print("text_encoder",text_encoder)
+        # print("text_input_ids", text_input_ids.to(device).dtype, text_input_ids.to(device).shape,text_input_ids.to(device))
+        # print("prompt_attention_mask", prompt_attention_mask.dtype, prompt_attention_mask.shape,prompt_attention_mask)
+        text_encoder=text_encoder.to(device)
+        prompt_embeds = text_encoder(text_input_ids.to(device), attention_mask=prompt_attention_mask)
+        prompt_embeds = prompt_embeds[0]
+        # print("prompt_embeds", prompt_embeds)
+
+    if text_encoder is not None:
+        dtype = text_encoder.dtype
+    # elif transformer is not None:
+    #     dtype = transformer.dtype
+    else:
+        dtype = None
+
+    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+
+    bs_embed, seq_len, _ = prompt_embeds.shape
+    # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+    prompt_attention_mask = prompt_attention_mask.view(bs_embed, -1)
+    prompt_attention_mask = prompt_attention_mask.repeat(num_images_per_prompt, 1)
+
+    # get unconditional embeddings for classifier free guidance
     if do_classifier_free_guidance and negative_prompt_embeds is None:
-        negative_prompt = negative_prompt or ""
-        negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-
-        if prompt is not None and type(prompt) is not type(negative_prompt):
-            raise TypeError(
-                f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
-                f" {type(prompt)}."
-            )
-        elif batch_size != len(negative_prompt):
-            raise ValueError(
-                f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
-                " the batch size of `prompt`."
-            )
-
-        negative_prompt_embeds = _get_t5_prompt_embeds(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-            prompt=negative_prompt,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=max_sequence_length,
-            device=device,
-            dtype=dtype,
+        uncond_tokens = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
+        uncond_tokens = _text_preprocessing(uncond_tokens, clean_caption=clean_caption)
+        max_length = prompt_embeds.shape[1]
+        uncond_input = tokenizer(
+            uncond_tokens,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            return_attention_mask=True,
+            add_special_tokens=True,
+            return_tensors="pt",
         )
+        negative_prompt_attention_mask = uncond_input.attention_mask
+        negative_prompt_attention_mask = negative_prompt_attention_mask.to(device)
 
-    return prompt_embeds, negative_prompt_embeds
+        negative_prompt_embeds = text_encoder(
+            uncond_input.input_ids.to(device), attention_mask=negative_prompt_attention_mask
+        )
+        negative_prompt_embeds = negative_prompt_embeds[0]
+
+    if do_classifier_free_guidance:
+        # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
+        seq_len = negative_prompt_embeds.shape[1]
+
+        negative_prompt_embeds = negative_prompt_embeds.to(dtype=dtype, device=device)
+
+        negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_images_per_prompt, 1)
+        negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+
+        negative_prompt_attention_mask = negative_prompt_attention_mask.view(bs_embed, -1)
+        negative_prompt_attention_mask = negative_prompt_attention_mask.repeat(num_images_per_prompt, 1)
+    else:
+        negative_prompt_embeds = None
+        negative_prompt_attention_mask = None
+
+    return prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
 
 
 
@@ -411,19 +455,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     # ----------Model Checkpoint Loading Arguments----------
     parser.add_argument(
-        "--revision",
-        type=str,
-        default=None,
-        required=False,
-        help="Revision of pretrained model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--variant",
-        type=str,
-        default=None,
-        help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
-    )
-    parser.add_argument(
         "--video_rm_name",
         type=str,
         default="vi_clip2",
@@ -431,7 +462,7 @@ def parse_args():
     parser.add_argument(
         "--video_rm_ckpt_dir",
         type=str,
-        default="/lustre/scratch/users/hao.zhang/rlsu_files/codefolder/haocog/CogVideo/intervid_ckpt/InternVideo2-stage2_1b-224p-f4.pt"
+        default="/ephemeral/hao.zhang/codefolder/CogVideo/cm/intervid_ckpt/InternVideo2-stage2_1b-224p-f4.pt"
     )
     parser.add_argument(
         "--video_rm_batch_size",
@@ -800,102 +831,18 @@ def time2tensor(t, zt2):
 
 @torch.no_grad()
 def decode_latents(latents, vae):
-    print(f"latent shape under decoding {latents.shape}")
-    latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
-    latents_splits = torch.split(latents, split_size_or_sections=2, dim=2)
-    latents = latents_splits[0]
-    print(f"latent really got used shape {latents.shape}")
-    latents = 1 / vae.config.scaling_factor * latents
-    latents = latents.to(torch.float16)
-    frames = vae.decode(latents).sample
-    return frames
-
-def get_3d_rotary_pos_embed(
-    embed_dim, crops_coords, grid_size, temporal_size, theta: int = 10000, use_real: bool = True
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    """
-    RoPE for video tokens with 3D structure.
-
-    Args:
-    embed_dim: (`int`):
-        The embedding dimension size, corresponding to hidden_size_head.
-    crops_coords (`Tuple[int]`):
-        The top-left and bottom-right coordinates of the crop.
-    grid_size (`Tuple[int]`):
-        The grid size of the spatial positional embedding (height, width).
-    temporal_size (`int`):
-        The size of the temporal dimension.
-    theta (`float`):
-        Scaling factor for frequency computation.
-    use_real (`bool`):
-        If True, return real part and imaginary part separately. Otherwise, return complex numbers.
-
-    Returns:
-        `torch.Tensor`: positional embedding with shape `(temporal_size * grid_size[0] * grid_size[1], embed_dim/2)`.
-    """
-    start, stop = crops_coords
-    grid_h = np.linspace(start[0], stop[0], grid_size[0], endpoint=False, dtype=np.float32)
-    grid_w = np.linspace(start[1], stop[1], grid_size[1], endpoint=False, dtype=np.float32)
-    grid_t = np.linspace(0, temporal_size, temporal_size, endpoint=False, dtype=np.float32)
-
-    # Compute dimensions for each axis
-    dim_t = embed_dim // 4
-    dim_h = embed_dim // 8 * 3
-    dim_w = embed_dim // 8 * 3
-
-    # Temporal frequencies
-    freqs_t = 1.0 / (theta ** (torch.arange(0, dim_t, 2).float() / dim_t))
-    grid_t = torch.from_numpy(grid_t).float()
-    freqs_t = torch.einsum("n , f -> n f", grid_t, freqs_t)
-    freqs_t = freqs_t.repeat_interleave(2, dim=-1)
-
-    # Spatial frequencies for height and width
-    freqs_h = 1.0 / (theta ** (torch.arange(0, dim_h, 2).float() / dim_h))
-    freqs_w = 1.0 / (theta ** (torch.arange(0, dim_w, 2).float() / dim_w))
-    grid_h = torch.from_numpy(grid_h).float()
-    grid_w = torch.from_numpy(grid_w).float()
-    freqs_h = torch.einsum("n , f -> n f", grid_h, freqs_h)
-    freqs_w = torch.einsum("n , f -> n f", grid_w, freqs_w)
-    freqs_h = freqs_h.repeat_interleave(2, dim=-1)
-    freqs_w = freqs_w.repeat_interleave(2, dim=-1)
-
-    # Broadcast and concatenate tensors along specified dimension
-    def broadcast(tensors, dim=-1):
-        num_tensors = len(tensors)
-        shape_lens = {len(t.shape) for t in tensors}
-        assert len(shape_lens) == 1, "tensors must all have the same number of dimensions"
-        shape_len = list(shape_lens)[0]
-        dim = (dim + shape_len) if dim < 0 else dim
-        dims = list(zip(*(list(t.shape) for t in tensors)))
-        expandable_dims = [(i, val) for i, val in enumerate(dims) if i != dim]
-        assert all(
-            [*(len(set(t[1])) <= 2 for t in expandable_dims)]
-        ), "invalid dimensions for broadcastable concatenation"
-        max_dims = [(t[0], max(t[1])) for t in expandable_dims]
-        expanded_dims = [(t[0], (t[1],) * num_tensors) for t in max_dims]
-        expanded_dims.insert(dim, (dim, dims[dim]))
-        expandable_shapes = list(zip(*(t[1] for t in expanded_dims)))
-        tensors = [t[0].expand(*t[1]) for t in zip(tensors, expandable_shapes)]
-        return torch.cat(tensors, dim=dim)
-
-    freqs = broadcast((freqs_t[:, None, None, :], freqs_h[None, :, None, :], freqs_w[None, None, :, :]), dim=-1)
-
-    t, h, w, d = freqs.shape
-    freqs = freqs.view(t * h * w, d)
-
-    # Generate sine and cosine components
-    sin = freqs.sin()
-    cos = freqs.cos()
-
-    if use_real:
-        return cos, sin
-    else:
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-        return freqs_cis
-
-
-def ddim_solver(scheduler, teacher_model,zt,t,s,alpha_schedule,sigma_schedule,latents,prompt_embeds,prompt_attention_mask,uncond_prompt_embeds,uncond_prompt_attention_mask,image_rotary_emb,weight_dtype,latent_channels,guidance_scale):
-    zt = scheduler.scale_model_input(zt, t)
+    latents_splits = torch.split(latents, split_size_or_sections=1, dim=2)
+    decoded_videos=[]
+    for split in latents_splits:
+        decoded_video = vae.vae.decode(split)
+        decoded_videos.append(decoded_video)
+        break
+    final_video = torch.cat(decoded_videos, dim=1)
+    
+    return final_video
+@torch.no_grad()
+def ddim_solver(pipe, teacher_model,zt,t,s,alpha_schedule,sigma_schedule,latents,prompt_embeds,prompt_attention_mask,uncond_prompt_embeds,uncond_prompt_attention_mask,image_rotary_emb,weight_dtype,latent_channels,guidance_scale):
+    zt = pipe.scheduler.scale_model_input(zt, t)
     zt=zt.to(alpha_schedule.device)
     t=t.to(alpha_schedule.device)
     s=s.to(alpha_schedule.device)
@@ -975,7 +922,6 @@ def denoise(model,zt,t,s,alpha_schedule,sigma_schedule,latents,prompt_embeds,pro
         )[0]
     
     if model.module.config.out_channels // 2 == latent_channels:
-        assert False
         noise = noise.chunk(2, dim=1)[0]
     else:
         noise = noise
@@ -1030,14 +976,8 @@ video_rm_fn = get_reward_fn(
 def contains_nan(tensor):
     return torch.any(torch.isnan(tensor)).item()
 
-tokenizer = AutoTokenizer.from_pretrained(
-        args.pretrained_teacher_model,
-        subfolder="tokenizer",
-        revision=args.revision,
-)
 
-def prepare_latents(batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, vae_scale_factor_temporal, vae_scale_factor_spatial, latents=None):
-    
+def prepare_latents(scheduler, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, vae_scale_factor_temporal, vae_scale_factor_spatial, latents=None):
     shape = (
             batch_size,
             (num_frames - 1) // vae_scale_factor_temporal + 1,
@@ -1099,63 +1039,15 @@ def main(args):
                 private=True,
             ).repo_id
     
-    
-    text_encoder = T5EncoderModel.from_pretrained(
-        args.pretrained_teacher_model,
-        subfolder="text_encoder",
-        revision=args.revision,
-    )
-    
-    text_encoder = text_encoder.to(device)
-
-    load_dtype = torch.bfloat16 if "5b" in args.pretrained_teacher_model.lower() else torch.float16
-    teacher_transformer = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_teacher_model,
-        subfolder="transformer",
-        torch_dtype=load_dtype,
-        revision=args.revision,
-        variant=args.variant,
-    )
-
-    vae = AutoencoderKLCogVideoX.from_pretrained(
-        args.pretrained_teacher_model,
-        subfolder="vae",
-        revision=args.revision,
-        variant=args.variant,
-    )
-
-    vae = vae.to(device=accelerator.device, dtype=weight_dtype)
-    
-    
-    text_encoder.requires_grad_(False)
-
-    teacher_transformer.requires_grad_(False)
-    vae.eval()
-    
+    pipe = CogVideoXPipeline.from_pretrained(args.pretrained_teacher_model, torch_dtype=weight_dtype).to(accelerator.device)
+    pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
     scheduler = DPMSolverMultistepScheduler()
-
-
-    student_transformer = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_student_model,
-        subfolder="transformer",
-        torch_dtype=load_dtype,
-        revision=args.revision,
-        variant=args.variant,
-    )
-
-    vae_scale_factor_spatial = 8
-    vae_scale_factor_temporal = 4
-    
-    
-    transformer = CogVideoXTransformer3DModel.from_config(student_transformer.config)
-
-    transformer.register_to_config(**student_transformer.config)
-
-    transformer.load_state_dict(student_transformer.state_dict())
-
-    del student_transformer    
-
-    vae.eval()
+    tokenizer = pipe.tokenizer
+    text_encoder = pipe.text_encoder
+    teacher_transformer = pipe.transformer
+    vae = pipe.vae
     num_frames = args.num_frames
     height = 480
     width = 720
@@ -1164,23 +1056,31 @@ def main(args):
     
     
     alpha_schedule = torch.sqrt(scheduler.alphas_cumprod)
-    # print(f"alpha scheduler before modify {alpha_schedule}")
-    # alpha_schedule[-1] = alpha_schedule[-2]
-    # print(f"alpha scheduler after modify {alpha_schedule}")    
+    print(f"alpha scheduler before modify {alpha_schedule}")
+    alpha_schedule[-1] = alpha_schedule[-2]
+    print(f"alpha scheduler after modify {alpha_schedule}")
+    
     sigma_schedule = torch.sqrt(1-scheduler.alphas_cumprod)
     alpha_schedule=alpha_schedule.to(accelerator.device).to(weight_dtype)
     sigma_schedule=sigma_schedule.to(accelerator.device).to(weight_dtype)
     
+    # vae.requires_grad_(False)
+    import copy
+    
+    transformer = copy.deepcopy(teacher_transformer)
+    transformer.train()
+    vae_scale_factor_temporal = pipe.vae_scale_factor_temporal
+    vae_scale_factor_spatial = pipe.vae_scale_factor_spatial
 
     low_precision_error_string = (
         " Please make sure to always have all model weights in full float32 precision when starting training - even if"
         " doing mixed precision training, copy of the weights should still be float32."
     )
 
-    if accelerator.unwrap_model(transformer).dtype != torch.float32:
-        raise ValueError(
-            f"Controlnet loaded as datatype {accelerator.unwrap_model(transformer).dtype}. {low_precision_error_string}"
-        )
+    # if accelerator.unwrap_model(transformer).dtype != torch.float32:
+    #     raise ValueError(
+    #         f"Controlnet loaded as datatype {accelerator.unwrap_model(transformer).dtype}. {low_precision_error_string}"
+    #     )
     
     transformer =transformer.to(weight_dtype).to(device)
     
@@ -1224,9 +1124,9 @@ def main(args):
         accelerator.register_load_state_pre_hook(load_model_hook)
 
     
-    # transformer.gradient_checkpointing = True
+    transformer.gradient_checkpointing = True
     # if args.gradient_checkpointing:
-    transformer.enable_gradient_checkpointing()
+    #     transformer.enable_gradient_checkpointing()
 
     # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
     if args.use_8bit_adam:
@@ -1275,7 +1175,6 @@ def main(args):
     # Prepare everything with our `accelerator`.
     
     transformer ,optimizer, train_dataloader, lr_scheduler = accelerator.prepare(transformer ,optimizer, train_dataloader, lr_scheduler)
-    
    
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1354,53 +1253,9 @@ def main(args):
 
     batch_size=args.train_batch_size
     num_images_per_prompt=1
-    
-    def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
-        tw = tgt_width
-        th = tgt_height
-        h, w = src
-        r = h / w
-        if r > (th / tw):
-            resize_height = th
-            resize_width = int(round(th / h * w))
-        else:
-            resize_width = tw
-            resize_height = int(round(tw / w * h))
-
-        crop_top = int(round((th - resize_height) / 2.0))
-        crop_left = int(round((tw - resize_width) / 2.0))
-
-        return (crop_top, crop_left), (crop_top + resize_height, crop_left + resize_width)
-    
-    def _prepare_rotary_positional_embeddings(
-        height: int,
-        width: int,
-        num_frames: int,
-        device: torch.device,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        grid_height = height // (vae_scale_factor_spatial * 2)
-        grid_width = width // (vae_scale_factor_spatial * 2)
-        base_size_width = 720 // (vae_scale_factor_spatial * 2)
-        base_size_height = 480 // (vae_scale_factor_spatial * 2)
-
-        grid_crops_coords = get_resize_crop_region_for_grid(
-            (grid_height, grid_width), base_size_width, base_size_height
-        )
-        freqs_cos, freqs_sin = get_3d_rotary_pos_embed(
-            embed_dim=64,
-            crops_coords=grid_crops_coords,
-            grid_size=(grid_height, grid_width),
-            temporal_size=num_frames,
-            use_real=True,
-        )
-
-        freqs_cos = freqs_cos.to(device=device)
-        freqs_sin = freqs_sin.to(device=device)
-        return freqs_cos, freqs_sin
 
     generator = None
     for epoch in range(first_epoch, args.num_train_epochs):
-        transformer.train()
         # print("Epoch: ", epoch,"/num", args.num_train_epochs)
         # N_i=exponential_schedule(epoch+1, args.num_train_epochs, N_start, N_max)
         # print('N_i',N_i)
@@ -1409,7 +1264,7 @@ def main(args):
             #     continue
             with accelerator.accumulate(transformer):
                 text =batch['text']
-                latents = prepare_latents(
+                latents = pipe.prepare_latents(
                     batch_size * num_images_per_prompt,
                     latent_channels,
                     num_frames, 
@@ -1418,8 +1273,6 @@ def main(args):
                     weight_dtype,
                     accelerator.device,
                     generator,
-                    vae_scale_factor_temporal,
-                    vae_scale_factor_spatial,
                     None,
                 )
                 latents = latents.to(accelerator.device)
@@ -1427,8 +1280,11 @@ def main(args):
                 bsz = latents.shape[0]
                 step_value = torch.randint(0, steps, (1,), device=device).long()
                 step = step_value.expand(bsz)
-                image_rotary_emb = _prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
-                    
+                image_rotary_emb = (
+                pipe._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
+                    if pipe.transformer.config.use_rotary_positional_embeddings
+                    else None
+                )
                 
                 # Randomly select a relative step
                 nrel = torch.randint(20, Tstep + 20, (bsz,), device=device).long()
@@ -1454,9 +1310,7 @@ def main(args):
                 (
                     prompt_embeds,
                     negative_prompt_embeds,
-                ) = encode_prompt(
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
+                ) = pipe.encode_prompt(
                     prompt=text,
                     negative_prompt="",
                     do_classifier_free_guidance=True,
@@ -1465,10 +1319,18 @@ def main(args):
                     prompt_embeds=None,
                     negative_prompt_embeds=None,
                     max_sequence_length=226,
-                    dtype=weight_dtype,
                 )
                 prompt_attention_mask = None
                 negative_prompt_attention_mask = None
+                # if prompt_embeds.ndim == 3:
+                #     prompt_embeds = prompt_embeds.unsqueeze(1)  # b l d -> b 1 l d
+                # if prompt_attention_mask.ndim == 2:
+                #     prompt_attention_mask = prompt_attention_mask.unsqueeze(1)  # b l -> b 1 l
+
+                # if negative_prompt_embeds.ndim == 3:
+                #     negative_prompt_embeds = negative_prompt_embeds.unsqueeze(1)
+                # if negative_prompt_attention_mask.ndim == 2:
+                #     negative_prompt_attention_mask = negative_prompt_attention_mask.unsqueeze(1)
                 if True:
                     prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
@@ -1483,12 +1345,12 @@ def main(args):
                     t_next=intermediate_t_vectors[id_t+1]
                     # print("t_now",t_now)
                     # print("t_next",t_next)
-                    latents=ddim_solver(scheduler, teacher_transformer,latents,t_now.to(alpha_schedule.device),t_next.to(alpha_schedule.device),
+                    latents=ddim_solver(pipe, teacher_transformer,latents,t_now.to(alpha_schedule.device),t_next.to(alpha_schedule.device),
                                         alpha_schedule,sigma_schedule,latents,prompt_embeds,prompt_attention_mask,
                                         negative_prompt_embeds,negative_prompt_attention_mask,image_rotary_emb,
                                 weight_dtype,latent_channels,guidance_scale) 
                 zt=latents
-                zs=ddim_solver(scheduler, teacher_transformer,zt.to(alpha_schedule.device),t.to(alpha_schedule.device),s.to(alpha_schedule.device),
+                zs=ddim_solver(pipe, teacher_transformer,zt.to(alpha_schedule.device),t.to(alpha_schedule.device),s.to(alpha_schedule.device),
                                alpha_schedule,sigma_schedule,latents,prompt_embeds,prompt_attention_mask,
                                 negative_prompt_embeds,negative_prompt_attention_mask,image_rotary_emb,
                                 weight_dtype,latent_channels,guidance_scale)
@@ -1501,40 +1363,36 @@ def main(args):
                 elif args.loss_type == "huber":
                     huber_c = args.huber_c
                     loss = (torch.sqrt(ref_diff.view(bsz, -1) ** 2 + huber_c ** 2) - huber_c).mean()
-
-                video = decode_latents(z_ref_t, vae)
-                print(f"shape for video is {video.shape}")
-                videos = ((video / 2.0 + 0.5).clamp(0, 1) * 255).to(dtype=torch.float16).permute(0, 2, 1, 3, 4).contiguous()
-                expert_rewards = reward_fn(videos[:, 0:1, :, :, :][0] , text)
-                reward_loss = -expert_rewards.mean() * args.reward_scale
+                
+                # print(z_ref_t.shape)
+                reward_loss = 0
+                video_rm_loss = 0
+                
+                # video = decode_latents(z_ref_t, vae)
+                # videos = ((video / 2.0 + 0.5).clamp(0, 1) * 255).to(dtype=torch.float16).permute(0, 2, 1, 3, 4).contiguous()
+                # expert_rewards = reward_fn(videos[0], text)
+                # reward_loss = -expert_rewards.mean() * args.reward_scale
                 
                 
-                decoded_imgs = videos[:, 0:8, :, :, :][0].reshape(
-                        args.train_batch_size,
-                        8,
-                        *videos[0].shape[1:],
-                )
+                # decoded_imgs = videos[0].reshape(
+                #         args.train_batch_size,
+                #         1,
+                #         *videos[0].shape[1:],
+                # )
                 
-                video_rewards = video_rm_fn(decoded_imgs, text)
-                video_rm_loss = (
-                    -video_rewards.mean() * args.video_reward_scale
-                )
+                # video_rewards = video_rm_fn(decoded_imgs, text)
+                # video_rm_loss = (
+                #     -video_rewards.mean() * args.video_reward_scale
+                # )
+                # print(video_rm_loss)
                 
+                
+                # ext = 'mp4'
+                # imageio.mimwrite(
+                #     os.path.join('/home/ubuntu/document/cm_osp/Open-Sora-Plan', f'test.{ext}'), videos[0], fps=24, quality=6)
                 
                 loss=loss.mean()
-                accelerator.backward(loss + reward_loss + video_rm_loss)
-                
-                print(f"loss value is {loss}")
-                
-                # for idx, param in enumerate(transformer.parameters()):
-                #     # print(param.requires_grad)
-                #     if param.grad is not None:
-                #         print(param.grad)
-                #     # else:
-                #     #     print(f"the grad for {param} is None")
-                        
-                # exit()
-                
+                accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
                 optimizer.step()
@@ -1579,9 +1437,10 @@ def main(args):
                     #     log_validation(vae, unet, args, accelerator, weight_dtype, global_step, "online")
             
             avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
-            avg_reward_loss = accelerator.gather(reward_loss.repeat(args.train_batch_size)).mean()
-            avg_video_reward_loss = accelerator.gather(video_rm_loss.repeat(args.train_batch_size)).mean()
-            logs = {"pic_reward_loss": avg_reward_loss.detach().item(), "video_reward_loss": avg_video_reward_loss.detach().item(), "loss": avg_loss.detach().item(), "overall_loss": avg_reward_loss.detach().item() + avg_loss.detach().item() + video_rm_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            # avg_reward_loss = accelerator.gather(reward_loss.repeat(args.train_batch_size)).mean()
+            # avg_video_reward_loss = accelerator.gather(video_rm_loss.repeat(args.train_batch_size)).mean()
+            # logs = {"pic_reward_loss": avg_reward_loss.detach().item(), "video_reward_loss": video_rm_loss.detach().item(), "loss": avg_loss.detach().item(), "overall_loss": avg_reward_loss.detach().item() + avg_loss.detach().item() + video_rm_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": avg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
