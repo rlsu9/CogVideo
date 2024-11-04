@@ -10,8 +10,9 @@ gsutil cp gs://vid_gen/runlong_temp_folder_for_pandas70m_debugging/bpe_simple_vo
 
 cp bpe_simple_vocab_16e6.txt.gz PATH/TO/YOUR/miniconda3/envs/cogvid_cm/lib/python3.11/site-packages/hpsv2/src/open_clip/
 
-cd cm
-mkdir hpsv2
-gsutil cp gs://vid_gen/runlong_temp_folder_for_pandas70m_debugging/HPS_v2.1_compressed.pt ./hpsv2
+mkdir ./cm/hpsv2
+gsutil cp gs://vid_gen/runlong_temp_folder_for_pandas70m_debugging/HPS_v2.1_compressed.pt ./cm/hpsv2
 
-bash ./reward_reliance.sh
+bash ./cm/cog_turbo.sh
+
+<!-- bash ./cm/reward_reliance.sh -->
