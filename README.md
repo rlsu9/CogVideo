@@ -1,3 +1,4 @@
+```
 git clone https://github.com/rlsu9/CogVideo.git
 cd CogVideo
 conda create -n cogvideo_cm python==3.11.10 -y
@@ -15,4 +16,5 @@ gsutil cp gs://vid_gen/runlong_temp_folder_for_pandas70m_debugging/HPS_v2.1_comp
 
 bash ./cm/cog_turbo.sh
 
+```
 <!-- bash ./cm/reward_reliance.sh -->
